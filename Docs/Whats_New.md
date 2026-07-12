@@ -25,6 +25,21 @@ Released TBD
 - Fix inconsistent image `memoryTypeBits` when `VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT` is used.
 - Fix shader stage interface matching of 16-bit floating point variables.
 - Fix spurious warning about blending on attachment formats that do not support it.
+- Add opt-in experimental Vulkan ray tracing through Metal acceleration structures:
+  - `VK_KHR_acceleration_structure`
+  - `VK_KHR_ray_query`
+  - `VK_KHR_ray_tracing_pipeline`
+  - `VK_KHR_pipeline_library`
+  - Acceleration-structure builds for triangles and axis-aligned bounding boxes
+  - Top-level acceleration structures with indirect instance descriptors
+  - Refit, copy, compaction, serialization, and build size queries
+  - Ray queries from any shader stage
+  - Ray tracing pipelines with shader binding tables, callable shaders, and recursion
+  - SPIR-V to MSL lowering for ray queries and ray tracing
+  - Enable with `MVK_CONFIG_ENABLE_EXPERIMENTAL_RAY_TRACING=1`. Compatible private placement heaps
+    use the bound backing ranges; otherwise, standalone Metal storage does not preserve
+    overlapping-range aliasing and may consume memory beyond the bound allocation.
+- Update `MVK_PRIVATE_API_VERSION` to version `44`.
 
 
 
@@ -2840,4 +2855,3 @@ MoltenVK 1.0.0
 Released 2018/02/26
 
 Initial open-source release!
-
