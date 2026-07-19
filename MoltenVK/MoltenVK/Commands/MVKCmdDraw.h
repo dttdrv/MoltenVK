@@ -199,6 +199,14 @@ public:
 						uint32_t stride,
 						uint32_t directCmdFirstInstance);
 
+	VkResult setContent(MVKCommandBuffer* cmdBuff,
+						id<MTLBuffer> indirectMTLBuff,
+						VkDeviceSize indirectMTLBuffOffset,
+						id<MTLBuffer> countMTLBuff,
+						VkDeviceSize countMTLBuffOffset,
+						uint32_t maxDrawCount,
+						uint32_t stride);
+
 	void encode(MVKCommandEncoder* cmdEncoder) override;
 	void encode(MVKCommandEncoder* cmdEncoder, const MVKIndexMTLBufferBinding& ibbOrig);
 
