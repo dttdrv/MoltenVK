@@ -2021,6 +2021,13 @@ void mvkReleaseDescriptorSetAccelerationStructures(MVKDescriptorSet* set) {
 	}
 }
 
+void mvkReleaseDescriptorSet(MVKDescriptorSet* set) {
+	if (!set->layout) { return; }
+	mvkReleaseDescriptorSetAccelerationStructures(set);
+	set->layout->release();
+	set->layout = nullptr;
+}
+
 template <MVKArgumentBufferMode ArgBufMode>
 static void writeDescriptorSetSnapshotAccelerationStructures(MVKDescriptorSet* set,
 	                                                          const MVKDescriptorSetSnapshot* snapshot,
@@ -2459,9 +2466,9 @@ MVKDescriptorPool* MVKDescriptorPool::Create(MVKDevice* device, const VkDescript
 }
 
 MVKDescriptorPool::~MVKDescriptorPool() {
-	if (_hasAccelerationStructureDescriptors) {
-		for (uint32_t i = 0; i < _numAllocatedDescriptorSets; i++) {
-			mvkReleaseDescriptorSetAccelerationStructures(&_descriptorSets[i].allocated);
+	for (uint32_t i = 0; i < _numAllocatedDescriptorSets; i++) {
+		if (_descriptorSets[i].isAllocated) {
+			mvkReleaseDescriptorSet(&_descriptorSets[i].allocated);
 		}
 	}
 	[_gpuBufferObject release];
@@ -2528,9 +2535,12 @@ MVKDescriptorSet* MVKDescriptorPool::allocateDescriptorSet() {
 		static_assert(offsetof(MVKDescriptorSetListItem, freed) == 0);
 		MVKDescriptorSetListItem* set = _firstFreeDescriptorSet;
 		_firstFreeDescriptorSet = set->freed.next;
+		set->isAllocated = true;
 		return &set->allocated;
 	} else if (_numAllocatedDescriptorSets < _descriptorSets.size()) {
-		return &_descriptorSets[_numAllocatedDescriptorSets++].allocated;
+		MVKDescriptorSetListItem* set = &_descriptorSets[_numAllocatedDescriptorSets++];
+		set->isAllocated = true;
+		return &set->allocated;
 	} else {
 		return nullptr;
 	}
@@ -2558,7 +2568,7 @@ VkResult MVKDescriptorPool::initDescriptorSet(MVKDescriptorSetLayout* mvkDSL, ui
 
 	memset(set, 0, sizeof(*set));
 	set->layout = mvkDSL;
-	_hasAccelerationStructureDescriptors |= mvkDSL->hasAccelerationStructures();
+	mvkDSL->retain();
 	set->argEnc = argenc;
 	set->variableDescriptorCount = variableDescriptorCount;
 	uint32_t cpuAllocSize = alignDescriptorOffset(cpuSize + auxOffsetSize, _cpuBufferAlignment);
@@ -2609,7 +2619,8 @@ VkResult MVKDescriptorPool::freeDescriptorSets(uint32_t count, const VkDescripto
 				_cpuBufferFreeList.add(set->cpuBuffer - _cpuBuffer.data(), set->cpuBufferSize);
 			if (set->gpuBufferSize)
 				_gpuBufferFreeList.add(set->gpuBufferOffset, set->gpuBufferSize);
-			mvkReleaseDescriptorSetAccelerationStructures(set);
+			mvkReleaseDescriptorSet(set);
+			setItem->isAllocated = false;
 			set->cpuBuffer = nullptr;
 			setItem->freed.next = _firstFreeDescriptorSet;
 			_firstFreeDescriptorSet = setItem;
@@ -2620,7 +2631,8 @@ VkResult MVKDescriptorPool::freeDescriptorSets(uint32_t count, const VkDescripto
 		for (uint32_t i = 0; i < count; i++) {
 			MVKDescriptorSet* set = reinterpret_cast<MVKDescriptorSet*>(pDescriptorSets[i]);
 			assert(set == &_descriptorSets[_numAllocatedDescriptorSets - count + i].allocated);
-			mvkReleaseDescriptorSetAccelerationStructures(set);
+			mvkReleaseDescriptorSet(set);
+			reinterpret_cast<MVKDescriptorSetListItem*>(pDescriptorSets[i])->isAllocated = false;
 			_gpuBufferUsed -= set->gpuBufferSize;
 			_cpuBufferUsed -= set->cpuBufferSize;
 		}
@@ -2630,12 +2642,12 @@ VkResult MVKDescriptorPool::freeDescriptorSets(uint32_t count, const VkDescripto
 }
 
 VkResult MVKDescriptorPool::reset(VkDescriptorPoolResetFlags flags) {
-	if (_hasAccelerationStructureDescriptors) {
-		for (uint32_t i = 0; i < _numAllocatedDescriptorSets; i++) {
-			mvkReleaseDescriptorSetAccelerationStructures(&_descriptorSets[i].allocated);
+	for (uint32_t i = 0; i < _numAllocatedDescriptorSets; i++) {
+		if (_descriptorSets[i].isAllocated) {
+			mvkReleaseDescriptorSet(&_descriptorSets[i].allocated);
+			_descriptorSets[i].isAllocated = false;
 		}
 	}
-	_hasAccelerationStructureDescriptors = false;
 	if (_freeAllowed) {
 		_firstFreeDescriptorSet = nullptr;
 		_cpuBufferFreeList.reset();

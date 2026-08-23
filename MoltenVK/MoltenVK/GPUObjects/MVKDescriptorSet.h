@@ -446,7 +446,7 @@ private:
 /** Represents a Vulkan descriptor set. */
 struct MVKDescriptorSet {
 	/** The layout this descriptor set uses. */
-	const MVKDescriptorSetLayout* layout;
+	MVKDescriptorSetLayout* layout;
 	/** The argument encoder, if needed. */
 	MVKMTLArgumentEncoder* argEnc;
 	/** The host-side descriptor buffer. */
@@ -498,6 +498,7 @@ struct MVKDescriptorSetSnapshot {
 
 void mvkRetainDescriptorSetAccelerationStructures(MVKDescriptorSet* set);
 void mvkReleaseDescriptorSetAccelerationStructures(MVKDescriptorSet* set);
+void mvkReleaseDescriptorSet(MVKDescriptorSet* set);
 void mvkMaterializePushDescriptorSet(
 	MVKCommandEncoder* cmdEncoder,
 	MVKDescriptorSet* source,
@@ -507,16 +508,20 @@ void mvkMaterializePushDescriptorSet(
 
 #pragma mark - MVKDescriptorPool
 
-union MVKDescriptorSetListItem;
+struct MVKDescriptorSetListItem;
 
 struct MVKFreedDescriptorSet {
 	/** The next descriptor set in the linked list of freed descriptor sets. */
 	MVKDescriptorSetListItem* next;
 };
 
-union MVKDescriptorSetListItem {
-	MVKDescriptorSet allocated;
-	MVKFreedDescriptorSet freed;
+struct MVKDescriptorSetListItem {
+	union {
+		MVKDescriptorSet allocated;
+		MVKFreedDescriptorSet freed;
+	};
+	/** Live-set flag. Kept outside the union so the free-list link cannot overwrite it. */
+	bool isAllocated = false;
 };
 
 /**
@@ -583,7 +588,6 @@ private:
 	uint32_t _cpuBufferUsed = 0;
 	uint32_t _gpuBufferUsed = 0;
 	bool _freeAllowed;
-	bool _hasAccelerationStructureDescriptors = false;
 	MVKInlineArray<MVKDescriptorSetListItem> _descriptorSets;
 	MVKInlineArray<char> _cpuBuffer;
 	MVKArrayRef<char> _gpuBuffer;

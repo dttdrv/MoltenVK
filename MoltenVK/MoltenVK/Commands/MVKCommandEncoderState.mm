@@ -1046,12 +1046,13 @@ void MVKVulkanCommonEncoderState::ensurePushDescriptorSize(uint32_t size) {
 void MVKVulkanCommonEncoderState::preparePushDescriptor(MVKDescriptorSetLayout* layout) {
 	bool layoutChanged = _pushDescriptor.layout != layout;
 	if (layoutChanged) {
-		mvkReleaseDescriptorSetAccelerationStructures(&_pushDescriptor);
+		mvkReleaseDescriptorSet(&_pushDescriptor);
 	}
 	uint32_t cpuSize = layout->cpuSize();
 	_pushDescriptor.cpuBufferSize = cpuSize;
 	ensurePushDescriptorSize(cpuSize);
 	_pushDescriptor.layout = layout;
+	if (layoutChanged) { layout->retain(); }
 	_pushDescriptor.argEnc = nullptr;
 	_pushDescriptor.auxIndices = layout->auxOffsets();
 	_pushDescriptor.variableDescriptorCount = 0;
@@ -1086,11 +1087,12 @@ MVKVulkanCommonEncoderState::MVKVulkanCommonEncoderState(const MVKVulkanCommonEn
 	_pushDescriptor.cpuBuffer = reinterpret_cast<char*>(_pushDescData.data());
 	setLayout(other._layout);
 	mvkRetainDescriptorSetAccelerationStructures(&_pushDescriptor);
+	if (_pushDescriptor.layout) { _pushDescriptor.layout->retain(); }
 }
 
 MVKVulkanCommonEncoderState& MVKVulkanCommonEncoderState::operator=(const MVKVulkanCommonEncoderState& other) {
 	if (this == &other) { return *this; }
-	mvkReleaseDescriptorSetAccelerationStructures(&_pushDescriptor);
+	mvkReleaseDescriptorSet(&_pushDescriptor);
 	memmove(_descriptorSets, other._descriptorSets, sizeof(_descriptorSets));
 	if (other._descriptorSetOverflow) {
 		if (!_descriptorSetOverflow) {
@@ -1107,11 +1109,12 @@ MVKVulkanCommonEncoderState& MVKVulkanCommonEncoderState::operator=(const MVKVul
 	_pushDescriptor.cpuBuffer = reinterpret_cast<char*>(_pushDescData.data());
 	setLayout(other._layout);
 	mvkRetainDescriptorSetAccelerationStructures(&_pushDescriptor);
+	if (_pushDescriptor.layout) { _pushDescriptor.layout->retain(); }
 	return *this;
 }
 
 MVKVulkanCommonEncoderState::~MVKVulkanCommonEncoderState() {
-	mvkReleaseDescriptorSetAccelerationStructures(&_pushDescriptor);
+	mvkReleaseDescriptorSet(&_pushDescriptor);
 	delete[] _descriptorSetOverflow;
 }
 
