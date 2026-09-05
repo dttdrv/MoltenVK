@@ -1490,14 +1490,90 @@ static bool verifyImplicitBuffers(MVKImplicitBufferBindings& buffers, const char
 	return true;
 }
 
-static void addCommonImplicitBuffersToShaderConfig(SPIRVToMSLConversionConfiguration& dst, const MVKOnePerEnumEntry<uint8_t, MVKImplicitBuffer>& src) {
+static bool pipelineLayoutHasAccelerationStructures(MVKPipelineLayout* layout) {
+	if (!layout) { return false; }
+	for (auto* setLayout : layout->getDescriptorSetLayouts()) {
+		if (setLayout && setLayout->hasAccelerationStructures()) { return true; }
+	}
+	return false;
+}
+
+static bool shaderUsesAccelerationStructureCapability(const VkPipelineShaderStageCreateInfo* pSS) {
+	if (!pSS) { return false; }
+	switch (pSS->stage) {
+		case VK_SHADER_STAGE_RAYGEN_BIT_KHR:
+		case VK_SHADER_STAGE_ANY_HIT_BIT_KHR:
+		case VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR:
+		case VK_SHADER_STAGE_MISS_BIT_KHR:
+		case VK_SHADER_STAGE_INTERSECTION_BIT_KHR:
+		case VK_SHADER_STAGE_CALLABLE_BIT_KHR:
+			return true;
+		default:
+			break;
+	}
+	const uint32_t* words = nullptr;
+	size_t wordCount = 0;
+	if (pSS->module) {
+		const auto& spirv = ((MVKShaderModule*)pSS->module)->getSPIRV();
+		words = spirv.data();
+		wordCount = spirv.size();
+	} else {
+		for (auto* next = (const VkBaseInStructure*)pSS->pNext; next; next = next->pNext) {
+			if (next->sType == VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO) {
+				auto* info = (const VkShaderModuleCreateInfo*)next;
+				words = info->pCode;
+				wordCount = info->codeSize / sizeof(uint32_t);
+				break;
+			}
+		}
+	}
+	if (!words || wordCount < 5 || words[0] != spv::MagicNumber) { return false; }
+	for (size_t word = 5; word < wordCount; ) {
+		uint32_t count = words[word] >> 16;
+		auto op = static_cast<spv::Op>(words[word] & 0xffff);
+		if (!count || word + count > wordCount) { break; }
+		if (op == spv::OpFunction) { break; }
+		if (op == spv::OpCapability && count >= 2) {
+			auto cap = static_cast<spv::Capability>(words[word + 1]);
+			if (cap == spv::CapabilityRayQueryKHR || cap == spv::CapabilityRayTracingKHR) {
+				return true;
+			}
+		}
+		word += count;
+	}
+	return false;
+}
+
+static bool needsAccelerationStructureAddresses(bool deviceSupportsAS,
+												MVKPipelineLayout* layout,
+												const VkPipelineShaderStageCreateInfo* pSS) {
+	return deviceSupportsAS &&
+		(pipelineLayoutHasAccelerationStructures(layout) ||
+		 shaderUsesAccelerationStructureCapability(pSS));
+}
+
+static bool needsAccelerationStructureAddresses(bool deviceSupportsAS,
+												MVKPipelineLayout* layout,
+												uint32_t stageCount,
+												const VkPipelineShaderStageCreateInfo* pStages) {
+	if (!deviceSupportsAS) { return false; }
+	if (pipelineLayoutHasAccelerationStructures(layout)) { return true; }
+	for (uint32_t i = 0; i < stageCount; i++) {
+		if (shaderUsesAccelerationStructureCapability(&pStages[i])) { return true; }
+	}
+	return false;
+}
+
+static void addCommonImplicitBuffersToShaderConfig(SPIRVToMSLConversionConfiguration& dst,
+												   const MVKOnePerEnumEntry<uint8_t, MVKImplicitBuffer>& src,
+												   bool enableAccelerationStructureAddresses) {
 	dst.options.mslOptions.swizzle_buffer_index = src[MVKImplicitBuffer::Swizzle];
 	dst.options.mslOptions.buffer_size_buffer_index = src[MVKImplicitBuffer::BufferSize];
 	dst.options.mslOptions.dynamic_offsets_buffer_index = src[MVKImplicitBuffer::DynamicOffset];
 #if SPIRV_CROSS_MSL_ACCELERATION_STRUCTURE_DESCRIPTOR_AS_ADDRESS
-	dst.options.mslOptions.acceleration_structure_descriptor_as_address = true;
+	dst.options.mslOptions.acceleration_structure_descriptor_as_address = enableAccelerationStructureAddresses;
 	dst.options.mslOptions.acceleration_structure_address_table_buffer_index =
-		src[MVKImplicitBuffer::AccelerationStructureAddressTable];
+		enableAccelerationStructureAddresses ? src[MVKImplicitBuffer::AccelerationStructureAddressTable] : 0;
 #endif
 }
 
@@ -1527,7 +1603,8 @@ bool MVKGraphicsPipeline::addVertexShaderToPipeline(MTLRenderPipelineDescriptor*
 	const auto& implicit = _stageResources[kMVKShaderStageVertex].implicitBuffers.ids;
 	shaderConfig.options.entryPointStage = spv::ExecutionModelVertex;
 	shaderConfig.options.entryPointName = pVertexSS->pName;
-	addCommonImplicitBuffersToShaderConfig(shaderConfig, implicit);
+	addCommonImplicitBuffersToShaderConfig(shaderConfig, implicit,
+		needsAccelerationStructureAddresses(getMetalFeatures().accelerationStructures, _layout, pVertexSS));
 	shaderConfig.options.mslOptions.shader_output_buffer_index = implicit[MVKImplicitBuffer::Output];
 	shaderConfig.options.mslOptions.view_mask_buffer_index = implicit[MVKImplicitBuffer::ViewRange];
 	shaderConfig.options.mslOptions.draw_id_buffer_index = implicit[MVKImplicitBuffer::DrawId];
@@ -1565,7 +1642,8 @@ bool MVKGraphicsPipeline::addVertexShaderToPipeline(MTLComputePipelineDescriptor
 	const auto& implicit = _stageResources[kMVKShaderStageVertex].implicitBuffers.ids;
 	shaderConfig.options.entryPointStage = spv::ExecutionModelVertex;
 	shaderConfig.options.entryPointName = pVertexSS->pName;
-	addCommonImplicitBuffersToShaderConfig(shaderConfig, implicit);
+	addCommonImplicitBuffersToShaderConfig(shaderConfig, implicit,
+		needsAccelerationStructureAddresses(getMetalFeatures().accelerationStructures, _layout, pVertexSS));
 	shaderConfig.options.mslOptions.shader_index_buffer_index = implicit[MVKImplicitBuffer::Index];
 	shaderConfig.options.mslOptions.shader_output_buffer_index = implicit[MVKImplicitBuffer::Output];
 	shaderConfig.options.mslOptions.draw_id_buffer_index = implicit[MVKImplicitBuffer::DrawId];
@@ -1610,7 +1688,8 @@ bool MVKGraphicsPipeline::addTessCtlShaderToPipeline(MTLComputePipelineDescripto
 	const auto& implicit = _stageResources[kMVKShaderStageTessCtl].implicitBuffers.ids;
 	shaderConfig.options.entryPointStage = spv::ExecutionModelTessellationControl;
 	shaderConfig.options.entryPointName = pTessCtlSS->pName;
-	addCommonImplicitBuffersToShaderConfig(shaderConfig, implicit);
+	addCommonImplicitBuffersToShaderConfig(shaderConfig, implicit,
+		needsAccelerationStructureAddresses(getMetalFeatures().accelerationStructures, _layout, pTessCtlSS));
 	shaderConfig.options.mslOptions.indirect_params_buffer_index = implicit[MVKImplicitBuffer::IndirectParams];
 	shaderConfig.options.mslOptions.shader_input_buffer_index = getMetalBufferIndexForVertexAttributeBinding(kMVKTessCtlInputBufferBinding);
 	shaderConfig.options.mslOptions.shader_output_buffer_index = implicit[MVKImplicitBuffer::Output];
@@ -1649,7 +1728,8 @@ bool MVKGraphicsPipeline::addTessEvalShaderToPipeline(MTLRenderPipelineDescripto
 	const auto& implicit = _stageResources[kMVKShaderStageTessEval].implicitBuffers.ids;
 	shaderConfig.options.entryPointStage = spv::ExecutionModelTessellationEvaluation;
 	shaderConfig.options.entryPointName = pTessEvalSS->pName;
-	addCommonImplicitBuffersToShaderConfig(shaderConfig, implicit);
+	addCommonImplicitBuffersToShaderConfig(shaderConfig, implicit,
+		needsAccelerationStructureAddresses(getMetalFeatures().accelerationStructures, _layout, pTessEvalSS));
 	shaderConfig.options.mslOptions.shader_input_buffer_index = getMetalBufferIndexForVertexAttributeBinding(kMVKTessEvalInputBufferBinding);
 	shaderConfig.options.mslOptions.shader_patch_input_buffer_index = getMetalBufferIndexForVertexAttributeBinding(kMVKTessEvalPatchInputBufferBinding);
 	shaderConfig.options.mslOptions.shader_tess_factor_buffer_index = getMetalBufferIndexForVertexAttributeBinding(kMVKTessEvalLevelBufferBinding);
@@ -1687,7 +1767,8 @@ bool MVKGraphicsPipeline::addFragmentShaderToPipeline(MTLRenderPipelineDescripto
 	auto& mtlFeats = getMetalFeatures();
 	if (pFragmentSS) {
 		shaderConfig.options.entryPointStage = spv::ExecutionModelFragment;
-		addCommonImplicitBuffersToShaderConfig(shaderConfig, implicit);
+		addCommonImplicitBuffersToShaderConfig(shaderConfig, implicit,
+			needsAccelerationStructureAddresses(getMetalFeatures().accelerationStructures, _layout, pFragmentSS));
 		shaderConfig.options.mslOptions.view_mask_buffer_index = implicit[MVKImplicitBuffer::ViewRange];
 		shaderConfig.options.entryPointName = pFragmentSS->pName;
 		shaderConfig.options.mslOptions.capture_output_to_buffer = false;
@@ -2103,6 +2184,9 @@ void MVKGraphicsPipeline::initShaderConversionConfig(SPIRVToMSLConversionConfigu
 	// present--or at least, we should move the ones that are down to avoid running over
 	// the limit of available buffers. But we can't know that until we compile the shaders.
 	initReservedVertexAttributeBufferCount(pCreateInfo);
+	bool enableASAddresses = needsAccelerationStructureAddresses(
+		getMetalFeatures().accelerationStructures, _layout,
+		pCreateInfo->stageCount, pCreateInfo->pStages);
 	for (uint32_t i = 0; i < std::size(_stageResources); i++) {
 		MVKShaderStage stage = (MVKShaderStage)i;
 		_stageResources[stage].implicitBuffers.ids[MVKImplicitBuffer::DynamicOffset]  = getImplicitBufferIndex(stage, 0);
@@ -2110,8 +2194,10 @@ void MVKGraphicsPipeline::initShaderConversionConfig(SPIRVToMSLConversionConfigu
 		_stageResources[stage].implicitBuffers.ids[MVKImplicitBuffer::Swizzle]        = getImplicitBufferIndex(stage, 2);
 		_stageResources[stage].implicitBuffers.ids[MVKImplicitBuffer::Output]         = getImplicitBufferIndex(stage, 4);
 		_stageResources[stage].implicitBuffers.ids[MVKImplicitBuffer::EmulatedReversedDepthViewport] = getImplicitBufferIndex(stage, 7);
-		_stageResources[stage].implicitBuffers.ids[MVKImplicitBuffer::AccelerationStructureAddressTable] =
-			getImplicitBufferIndex(stage, kMVKRayTracingAccelerationStructureAddressTableBufferOffset);
+		if (enableASAddresses) {
+			_stageResources[stage].implicitBuffers.ids[MVKImplicitBuffer::AccelerationStructureAddressTable] =
+				getImplicitBufferIndex(stage, kMVKRayTracingAccelerationStructureAddressTableBufferOffset);
+		}
 		uint32_t extra = getImplicitBufferIndex(stage, 3);
 		switch (stage) {
 			case kMVKShaderStageVertex:
@@ -2575,10 +2661,15 @@ MVKMTLFunction MVKComputePipeline::getMTLFunction(const VkPipelineShaderStageCre
 	_stageResources.implicitBuffers.ids[MVKImplicitBuffer::BufferSize]    = getImplicitBufferIndex(1);
 	_stageResources.implicitBuffers.ids[MVKImplicitBuffer::Swizzle]       = getImplicitBufferIndex(2);
 	_stageResources.implicitBuffers.ids[MVKImplicitBuffer::DispatchBase]  = getImplicitBufferIndex(3);
-	_stageResources.implicitBuffers.ids[MVKImplicitBuffer::AccelerationStructureAddressTable] =
-		getImplicitBufferIndex(kMVKRayTracingAccelerationStructureAddressTableBufferOffset);
+	bool enableASAddresses = needsAccelerationStructureAddresses(
+		getMetalFeatures().accelerationStructures, _layout, pSS);
+	if (enableASAddresses) {
+		_stageResources.implicitBuffers.ids[MVKImplicitBuffer::AccelerationStructureAddressTable] =
+			getImplicitBufferIndex(kMVKRayTracingAccelerationStructureAddressTableBufferOffset);
+	}
 
-	addCommonImplicitBuffersToShaderConfig(shaderConfig, _stageResources.implicitBuffers.ids);
+	addCommonImplicitBuffersToShaderConfig(shaderConfig, _stageResources.implicitBuffers.ids,
+										   enableASAddresses);
 	shaderConfig.options.mslOptions.indirect_params_buffer_index = _stageResources.implicitBuffers.ids[MVKImplicitBuffer::DispatchBase];
 	bool visibleRayStage = executionModel >= spv::ExecutionModelRayGenerationKHR &&
 		executionModel <= spv::ExecutionModelCallableKHR;
@@ -2803,11 +2894,8 @@ MVKRayTracingPipeline::MVKRayTracingPipeline(MVKDevice* device,
 		}
 		return { nullptr, 0 };
 	};
-#if MVK_XCODE_26 && MVK_MACOS_OR_IOS
 	_usesIFB = !_isLibrary && !linksLibraries &&
-		getMetalFeatures().mslVersion >= SPIRV_CROSS_NAMESPACE::CompilerMSL::Options::make_msl_version(4, 0) &&
-		getPhysicalDevice()->getMTLDeviceCapabilities().getHighestAppleGPU() >= 9;
-#endif
+		getPhysicalDevice()->supportsRayTracingIntersectionFunctionBuffers();
 	_usesProceduralIFB = _usesIFB && std::any_of(pCreateInfo->pGroups,
 		pCreateInfo->pGroups + pCreateInfo->groupCount, [](const auto& group) {
 			return group.type == VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR;

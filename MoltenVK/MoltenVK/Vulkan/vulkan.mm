@@ -1148,7 +1148,9 @@ MVK_PUBLIC_VULKAN_SYMBOL VkResult vkGetRayTracingCaptureReplayShaderGroupHandles
 	void*                                       pData) {
 
 	MVKTraceVulkanCallStart();
-	VkResult rslt = ((MVKRayTracingPipeline*)pipeline)->getShaderGroupHandles(firstGroup, groupCount, dataSize, pData);
+	VkResult rslt = MVKDevice::getMVKDevice(device)->reportError(
+		VK_ERROR_FEATURE_NOT_PRESENT,
+		"vkGetRayTracingCaptureReplayShaderGroupHandlesKHR(): Shader group handle capture replay is not supported.");
 	MVKTraceVulkanCallEnd();
 	return rslt;
 }

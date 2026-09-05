@@ -84,27 +84,14 @@ id<MTLComputeCommandEncoder> mvkEncodeAccelerationStructureConversion(
 	NSUInteger canonicalHandleOffset,
 	id<MTLBuffer> instanceMetadata) {
 	if (!itemCount) { return nil; }
-	id<MTLComputeCommandEncoder> mtlEncoder =
-		cmdEncoder->getMTLComputeEncoder(kMVKCommandUseBuildAccelerationStructureConvertBuffers);
-	id<MTLComputePipelineState> mtlState = cmdEncoder->getCommandEncodingPool()
-		->getCmdBuildAccelerationStructureConvertBuffersMTLComputePipelineState();
-	if (!mtlEncoder || !mtlState) { return nil; }
-	[mtlEncoder setComputePipelineState:mtlState];
-	[mtlEncoder setBuffer:srcBuffer offset:srcOffset atIndex:0];
-	[mtlEncoder setBuffer:dstBuffer offset:dstOffset atIndex:1];
-	cmdEncoder->setComputeBytes(mtlEncoder, &srcStride, sizeof(srcStride), 2);
-	cmdEncoder->setComputeBytes(mtlEncoder, &itemCount, sizeof(itemCount), 3);
-	cmdEncoder->setComputeBytes(mtlEncoder, &conversionType, sizeof(conversionType), 4);
-	id<MTLBuffer> serializationBuffer = canonicalBuffer ? canonicalBuffer : dstBuffer;
-	[mtlEncoder setBuffer:serializationBuffer offset:canonicalBuffer ? canonicalRecordOffset : dstOffset atIndex:6];
-	[mtlEncoder setBuffer:serializationBuffer offset:canonicalBuffer ? canonicalHandleOffset : dstOffset atIndex:7];
-	[mtlEncoder setBuffer:instanceMetadata ? instanceMetadata : dstBuffer
-	                 offset:instanceMetadata ? 0 : dstOffset
-	                atIndex:8];
-	[mtlEncoder setBuffer:dstBuffer offset:dstOffset atIndex:5];
-	if (conversionType != kMVKAccelerationStructureConvertTransform) {
-		const MVKMTLBufferAllocation* referenceTable = nullptr;
-		MVKUseResourceHelper resources;
+	bool deserialize = conversionType == kMVKAccelerationStructureDeserializeInstances;
+	bool transform = conversionType == kMVKAccelerationStructureConvertTransform;
+	if (deserialize && (!canonicalBuffer || !instanceMetadata)) { return nil; }
+	if (!transform && !deserialize && !instanceMetadata) { return nil; }
+	const MVKMTLBufferAllocation* referenceTable = nullptr;
+	MVKUseResourceHelper resources;
+	MVKSmallVector<id<MTLBuffer>, 16> retainedBuffers;
+	if (!transform) {
 		if (cmdEncoder->getDevice()->usesIndirectAccelerationStructureInstanceDescriptors()) {
 			referenceTable = cmdEncoder->getAccelerationStructureAddressTable(
 				resources, MVKResourceUsageStages::Compute);
@@ -112,15 +99,49 @@ id<MTLComputeCommandEncoder> mvkEncodeAccelerationStructureConversion(
 			referenceTable = cmdEncoder->getAccelerationStructureReferenceTable();
 		}
 		if (!referenceTable || !referenceTable->_mtlBuffer) { return nil; }
-		[mtlEncoder setBuffer:referenceTable->_mtlBuffer
-					 offset:referenceTable->_offset atIndex:5];
-		MVKSmallVector<id<MTLBuffer>, 16> retainedBuffers;
 		if (conversionType == kMVKAccelerationStructureConvertInstancePointers) {
 			cmdEncoder->getDevice()->encodeGPUAddressableBuffers(
 				resources, MVKResourceUsageStages::Compute, false, &retainedBuffers);
 		}
+	}
+	id<MTLComputeCommandEncoder> mtlEncoder =
+		cmdEncoder->getMTLComputeEncoder(kMVKCommandUseBuildAccelerationStructureConvertBuffers);
+	MVKCommandEncodingPool* pool = cmdEncoder->getCommandEncodingPool();
+	id<MTLComputePipelineState> mtlState = nullptr;
+	if (transform) {
+		mtlState = pool->getCmdBuildAccelerationStructureConvertTransformsMTLComputePipelineState();
+	} else if (deserialize) {
+		mtlState = pool->getCmdDeserializeAccelerationStructureInstancesMTLComputePipelineState();
+	} else {
+		mtlState = pool->getCmdBuildAccelerationStructureConvertBuffersMTLComputePipelineState();
+	}
+	if (!mtlEncoder || !mtlState) {
+		for (id<MTLBuffer> buffer : retainedBuffers) { [buffer release]; }
+		return nil;
+	}
+	auto& state = cmdEncoder->getMtlCompute();
+	state.bindPipeline(mtlEncoder, mtlState);
+	state.bindBuffer(mtlEncoder, dstBuffer, dstOffset, 1);
+	cmdEncoder->setComputeBytes(mtlEncoder, &itemCount, sizeof(itemCount), 3);
+	if (!deserialize) {
+		state.bindBuffer(mtlEncoder, srcBuffer, srcOffset, 0);
+		cmdEncoder->setComputeBytes(mtlEncoder, &srcStride, sizeof(srcStride), 2);
+	}
+	if (!transform) {
+		if (!deserialize) {
+			cmdEncoder->setComputeBytes(mtlEncoder, &conversionType, sizeof(conversionType), 4);
+		}
+		state.bindBuffer(mtlEncoder, referenceTable->_mtlBuffer, referenceTable->_offset, 5);
 		resources.bindAndResetCompute(mtlEncoder);
 		for (id<MTLBuffer> buffer : retainedBuffers) { [buffer release]; }
+		retainedBuffers.clear();
+		if (canonicalBuffer) {
+			state.bindBuffer(mtlEncoder, canonicalBuffer, canonicalRecordOffset, 6);
+			state.bindBuffer(mtlEncoder, canonicalBuffer, canonicalHandleOffset, 7);
+		}
+		if (instanceMetadata) {
+			state.bindBuffer(mtlEncoder, instanceMetadata, 0, 8);
+		}
 	}
 	if (cmdEncoder->getMetalFeatures().nonUniformThreadgroups) {
 		[mtlEncoder dispatchThreads:MTLSizeMake(itemCount, 1, 1)
@@ -257,9 +278,10 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
 			continue;
 		}
 		id<MTLAccelerationStructure> dstAccStruct = dstGeneration->getMTLAccelerationStructure();
+
 		MVKAccelerationStructureCanonicalBuild canonicalBuild;
 		VkResult canonicalResult = canonicalBuild.prepareAndEncode(cmdEncoder, mvkDstAccStruct,
-			buildInfo, ranges.data());
+			descriptor, buildInfo, ranges.data());
 		if (canonicalResult < 0) {
 			cmdEncoder->reportError(canonicalResult,
 				"vkCmdBuildAccelerationStructuresKHR(): The canonical build input could not be captured.");
@@ -399,7 +421,7 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
 		if (!canonicalBuild.publish(dstGeneration, buildSizes.accelerationStructureSize,
 				instanceMetadataSize)) {
 			cmdEncoder->reportError(VK_ERROR_OUT_OF_HOST_MEMORY,
-				"vkCmdBuildAccelerationStructuresKHR(): The canonical build input could not be published.");
+				"vkCmdBuildAccelerationStructuresKHR(): The built acceleration-structure generation could not be published.");
 			dstGeneration->release();
 			if (srcGeneration) { srcGeneration->release(); }
 			[descriptor release];
@@ -598,17 +620,22 @@ VkResult MVKCmdWriteAccelerationStructuresProperties::setContent(MVKCommandBuffe
 void MVKCmdWriteAccelerationStructuresProperties::encode(MVKCommandEncoder* cmdEncoder) {
 	if (_accelerationStructures.empty()) { return; }
 	if (_queryType == VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR) {
-		id<MTLAccelerationStructureCommandEncoder> encoder =
-			cmdEncoder->getMTLAccelerationStructureEncoder(kMVKCommandUseWriteAccelerationStructuresProperties);
 		for (uint32_t index = 0; index < _accelerationStructures.size(); index++) {
 			auto* generation = _accelerationStructures[index]->retainCurrentGeneration();
 			uint32_t query = _firstQuery + index;
 			if (generation) {
+				id<MTLAccelerationStructureCommandEncoder> encoder =
+					cmdEncoder->getMTLAccelerationStructureEncoder(kMVKCommandUseWriteAccelerationStructuresProperties);
 				[encoder writeCompactedAccelerationStructureSize:generation->getMTLAccelerationStructure()
 				                                      toBuffer:_queryPool->getResultMTLBuffer()
 				                                        offset:_queryPool->getResultOffset(query)
 				                                  sizeDataType:MTLDataTypeULong];
 				cmdEncoder->retainAccelerationStructureGeneration(generation);
+			} else {
+				[cmdEncoder->getMTLBlitEncoder(kMVKCommandUseWriteAccelerationStructuresProperties)
+					fillBuffer:_queryPool->getResultMTLBuffer()
+					range:NSMakeRange(_queryPool->getResultOffset(query), sizeof(uint64_t))
+					value:0];
 			}
 			cmdEncoder->markAccelerationStructureQuery(_queryPool, query);
 			_queryPool->endQuery(query, cmdEncoder);

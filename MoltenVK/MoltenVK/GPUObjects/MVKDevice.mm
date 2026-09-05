@@ -1329,8 +1329,9 @@ void MVKPhysicalDevice::getProperties(VkPhysicalDeviceProperties2* properties) {
 				rayTracingProperties->shaderGroupHandleSize = 32;
 				rayTracingProperties->maxRayRecursionDepth = kMVKMaxRayRecursionDepth;
 				rayTracingProperties->maxShaderGroupStride = std::numeric_limits<uint32_t>::max() & ~15u;
-				rayTracingProperties->shaderGroupBaseAlignment = 16;
-				rayTracingProperties->shaderGroupHandleCaptureReplaySize = 32;
+				rayTracingProperties->shaderGroupBaseAlignment =
+					supportsRayTracingIntersectionFunctionBuffers() ? 64 : 16;
+				rayTracingProperties->shaderGroupHandleCaptureReplaySize = 0;
 				rayTracingProperties->maxRayDispatchInvocationCount = 1u << 30;
 				rayTracingProperties->shaderGroupHandleAlignment = 16;
 				rayTracingProperties->maxRayHitAttributeSize = kMVKMaxRayHitAttributeSize;
@@ -3616,6 +3617,16 @@ bool MVKPhysicalDevice::supportsRayTracingPipeline() const {
 	return _metalFeatures.accelerationStructures && _supportsFunctionPointers &&
 		_isUsingMetalArgumentBuffers && MVK_SPIRV_CROSS_RT_PIPELINE &&
 		_metalFeatures.mslVersion >= SPIRV_CROSS_NAMESPACE::CompilerMSL::Options::make_msl_version(3, 2);
+}
+
+bool MVKPhysicalDevice::supportsRayTracingIntersectionFunctionBuffers() const {
+#if MVK_XCODE_26 && MVK_MACOS_OR_IOS
+	return supportsRayTracingPipeline() &&
+		_metalFeatures.mslVersion >= SPIRV_CROSS_NAMESPACE::CompilerMSL::Options::make_msl_version(4, 0) &&
+		_gpuCapabilities.getHighestAppleGPU() >= 9;
+#else
+	return false;
+#endif
 }
 
 void MVKPhysicalDevice::initExtensions() {

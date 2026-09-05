@@ -65,6 +65,7 @@ public:
 
 	VkResult prepareAndEncode(MVKCommandEncoder* cmdEncoder,
 							  MVKAccelerationStructure* accelerationStructure,
+							  MTLAccelerationStructureDescriptor* descriptor,
 							  const VkAccelerationStructureBuildGeometryInfoKHR& buildInfo,
 							  const VkAccelerationStructureBuildRangeInfoKHR* ranges);
 

@@ -242,7 +242,7 @@ void MVKCmdTraceRays::encode(MVKCommandEncoder* cmdEncoder) {
 	dispatch.pipelineFlags = pipeline->getRayTracingPipelineFlags();
 	dispatch.usesIFB = pipeline->usesIntersectionFunctionBuffer() &&
 		_hitShaderBindingTable.size >= 32 && _hitShaderBindingTable.stride &&
-		_hitShaderBindingTable.stride <= (1u << 12) &&
+		_hitShaderBindingTable.stride < (1u << 12) &&
 		!(_hitShaderBindingTable.deviceAddress & 63);
 	using Dispatch = decltype(dispatch);
 	static_assert(offsetof(Dispatch, descriptorSetAddressesAddress) == 14 * sizeof(uint64_t));
@@ -271,7 +271,7 @@ void MVKCmdTraceRays::encode(MVKCommandEncoder* cmdEncoder) {
 	addImplicitData(vkRayTracing._implicitBufferData.bufferSizes, dispatch.bufferSizeAddress);
 	addImplicitData(vkRayTracing._implicitBufferData.dynamicOffsets, dispatch.dynamicOffsetsAddress);
 	if (pipeline->needsAccelerationStructureAddressTable()) {
-		MVKUseResourceHelper resources;
+		auto& resources = cmdEncoder->getState().mtlShared()._useResource;
 		auto* addressTable = cmdEncoder->getAccelerationStructureAddressTable(
 			resources, MVKResourceUsageStages::Compute);
 		if (!addressTable || !addressTable->_mtlBuffer) {

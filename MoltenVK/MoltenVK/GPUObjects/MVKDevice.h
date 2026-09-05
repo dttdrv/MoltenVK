@@ -450,6 +450,7 @@ public:
 
 	/** Returns the MTLDevice capabilities. */
 	const MVKMTLDeviceCapabilities getMTLDeviceCapabilities() { return _gpuCapabilities; }
+	bool supportsRayTracingIntersectionFunctionBuffers() const;
 
 	/** Returns info on the sizes of argument buffers. */
 	const MVKPhysicalDeviceArgumentBufferSizes& getArgumentBufferSizes() const { return _argumentBufferSizes; }

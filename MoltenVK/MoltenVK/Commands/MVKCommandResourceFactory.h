@@ -386,6 +386,8 @@ public:
 	id<MTLComputePipelineState> newConvertUint8IndicesMTLComputePipelineState(MVKVulkanAPIDeviceObject* owner);
 	id<MTLComputePipelineState> newCmdBuildAccelerationStructureConvertBuffersMTLComputePipelineState(MVKVulkanAPIDeviceObject* owner);
 	id<MTLComputePipelineState> newCmdSerializeAccelerationStructureGatherMTLComputePipelineState(MVKVulkanAPIDeviceObject* owner);
+	id<MTLComputePipelineState> newCmdBuildAccelerationStructureConvertTransformsMTLComputePipelineState(MVKVulkanAPIDeviceObject* owner);
+	id<MTLComputePipelineState> newCmdDeserializeAccelerationStructureInstancesMTLComputePipelineState(MVKVulkanAPIDeviceObject* owner);
 	id<MTLComputePipelineState> newCmdTraceRaysIndirectConvertMTLComputePipelineState(MVKVulkanAPIDeviceObject* owner);
 	id<MTLLibrary> newRayTracingDispatcherMTLLibrary(NSString* source,
 														 bool usesIFB,

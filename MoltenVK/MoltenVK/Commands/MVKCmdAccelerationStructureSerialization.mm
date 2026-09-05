@@ -296,10 +296,11 @@ static bool encodeCanonicalGather(
 	if (!pipeline) { return false; }
 	id<MTLComputeCommandEncoder> encoder =
 		cmdEncoder->getMTLComputeEncoder(kMVKCommandUseBuildAccelerationStructureConvertBuffers);
-	[encoder setComputePipelineState:pipeline];
-	[encoder setBuffer:gather.indices offset:0 atIndex:0];
-	[encoder setBuffer:gather.vertices offset:0 atIndex:1];
-	[encoder setBuffer:destination offset:0 atIndex:2];
+	auto& state = cmdEncoder->getMtlCompute();
+	state.bindPipeline(encoder, pipeline);
+	state.bindBuffer(encoder, gather.indices, 0, 0);
+	state.bindBuffer(encoder, gather.vertices, 0, 1);
+	state.bindBuffer(encoder, destination, 0, 2);
 	cmdEncoder->setComputeBytes(encoder, &gather.info, sizeof(gather.info), 3);
 	if (cmdEncoder->getMetalFeatures().nonUniformThreadgroups) {
 		[encoder dispatchThreads:MTLSizeMake(gather.info.itemCount, 1, 1)
@@ -328,6 +329,7 @@ MVKAccelerationStructureCanonicalBuild::~MVKAccelerationStructureCanonicalBuild(
 VkResult MVKAccelerationStructureCanonicalBuild::prepareAndEncode(
 	MVKCommandEncoder* cmdEncoder,
 	MVKAccelerationStructure* accelerationStructure,
+	MTLAccelerationStructureDescriptor* descriptor,
 	const VkAccelerationStructureBuildGeometryInfoKHR& buildInfo,
 	const VkAccelerationStructureBuildRangeInfoKHR* ranges) {
 	[_buffer release];
@@ -344,6 +346,7 @@ VkResult MVKAccelerationStructureCanonicalBuild::prepareAndEncode(
 	VkDeviceSize recordStride = 0;
 	VkDeviceSize recordCount = 0;
 	VkDeviceSize canonicalDataOffset = 0;
+	bool hasZeroVertexStride = false;
 
 	if (buildInfo.type == VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR) {
 		recordStride = sizeof(MVKSerializedAccelerationStructureGeometryRecord);
@@ -368,8 +371,8 @@ VkResult MVKAccelerationStructureCanonicalBuild::prepareAndEncode(
 				const auto& triangles = geometry.geometry.triangles;
 				uint64_t formatSize = mvkVkFormatBytesPerBlock(triangles.vertexFormat);
 				record.vertexFormat = triangles.vertexFormat;
-				if (!formatSize || formatSize > std::numeric_limits<uint32_t>::max() ||
-					(range.primitiveCount && !triangles.vertexStride)) {
+				hasZeroVertexStride |= !triangles.vertexStride;
+				if (!formatSize || formatSize > std::numeric_limits<uint32_t>::max()) {
 					return VK_ERROR_INITIALIZATION_FAILED;
 				}
 				if (triangles.indexType == VK_INDEX_TYPE_NONE_KHR) {
@@ -522,12 +525,10 @@ VkResult MVKAccelerationStructureCanonicalBuild::prepareAndEncode(
 							record.indexSize = indexSize;
 							record.vertexOffset = indexedVertexOffset;
 							record.vertexSize = indexedVertexSize;
-							if (!addCanonicalCopy(cmdEncoder->getDevice(), triangles.indexData.deviceAddress,
-									range.primitiveOffset, record.indexSize, record.indexOffset, copies) ||
-								!addCanonicalCopy(cmdEncoder->getDevice(), triangles.vertexData.deviceAddress,
-									vertexSourceOffset, record.vertexSize, record.vertexOffset, copies)) {
-								return VK_ERROR_INITIALIZATION_FAILED;
-							}
+							copies.push_back({indexRange.buffer, indexRange.offset,
+								record.indexOffset, record.indexSize});
+							copies.push_back({vertexRange.buffer, vertexRange.offset,
+								record.vertexOffset, record.vertexSize});
 						} else {
 							dataSize = deindexedDataSize;
 							record.indexType = VK_INDEX_TYPE_NONE_KHR;
@@ -663,6 +664,21 @@ VkResult MVKAccelerationStructureCanonicalBuild::prepareAndEncode(
 												 options:MTLResourceStorageModePrivate];
 	if (!_buffer) { return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
 	_commandEncoder = cmdEncoder;
+	if (hasZeroVertexStride) {
+		auto* primitive = (MTLPrimitiveAccelerationStructureDescriptor*)descriptor;
+		for (uint32_t index = 0; index < buildInfo.geometryCount; index++) {
+			const auto& geometry = buildInfo.pGeometries
+				? buildInfo.pGeometries[index] : *buildInfo.ppGeometries[index];
+			if (geometry.geometryType != VK_GEOMETRY_TYPE_TRIANGLES_KHR ||
+				geometry.geometry.triangles.vertexStride) { continue; }
+			auto* triangle = (MTLAccelerationStructureTriangleGeometryDescriptor*)primitive.geometryDescriptors[index];
+			triangle.vertexBuffer = _buffer;
+			triangle.vertexBufferOffset = records[index].vertexOffset;
+			triangle.vertexStride = records[index].vertexStride;
+			triangle.indexBuffer = nil;
+			triangle.indexBufferOffset = 0;
+		}
+	}
 
 	NSUInteger metadataSize = static_cast<NSUInteger>(_layout.dataOffset);
 	const MVKMTLBufferAllocation* metadata = cmdEncoder->getTempMTLBuffer(metadataSize);
@@ -745,9 +761,11 @@ void MVKCmdCopyAccelerationStructureToMemory::encode(MVKCommandEncoder* cmdEncod
 	auto* generation = _accelerationStructure
 		? _accelerationStructure->retainCurrentGeneration()
 		: nullptr;
-	if (!generation) { return; }
-	auto snapshot = generation->retainCanonicalSnapshot();
-	generation->release();
+	MVKAccelerationStructureCanonicalSnapshot snapshot {};
+	if (generation) {
+		snapshot = generation->retainCanonicalSnapshot();
+		generation->release();
+	}
 	bool valid = snapshot.canonicalBuffer && snapshot.serializationSize &&
 		snapshot.serializationSize <= snapshot.canonicalBuffer.length &&
 		snapshot.serializationSize <= std::numeric_limits<NSUInteger>::max();
@@ -766,7 +784,7 @@ void MVKCmdCopyAccelerationStructureToMemory::encode(MVKCommandEncoder* cmdEncod
 	if (!valid) {
 		MVKAccelerationStructureStorageGeneration::releaseCanonicalSnapshot(snapshot);
 		cmdEncoder->reportError(VK_ERROR_INITIALIZATION_FAILED,
-			"vkCmdCopyAccelerationStructureToMemoryKHR(): The canonical acceleration structure or destination range is invalid.");
+			"vkCmdCopyAccelerationStructureToMemoryKHR(): No captured serialization payload, or the destination range is invalid.");
 		return;
 	}
 	releaseCanonicalSnapshotOnCompletion(cmdEncoder, snapshot);

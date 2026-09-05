@@ -643,6 +643,16 @@ id<MTLComputePipelineState> MVKCommandResourceFactory::newCmdSerializeAccelerati
 		_mtlAccelerationStructureLibrary);
 }
 
+id<MTLComputePipelineState> MVKCommandResourceFactory::newCmdBuildAccelerationStructureConvertTransformsMTLComputePipelineState(MVKVulkanAPIDeviceObject* owner) {
+	return newMTLComputePipelineState("cmdBuildAccelerationStructureConvertTransforms", owner,
+		_mtlAccelerationStructureLibrary);
+}
+
+id<MTLComputePipelineState> MVKCommandResourceFactory::newCmdDeserializeAccelerationStructureInstancesMTLComputePipelineState(MVKVulkanAPIDeviceObject* owner) {
+	return newMTLComputePipelineState("cmdDeserializeAccelerationStructureInstances", owner,
+		_mtlAccelerationStructureLibrary);
+}
+
 id<MTLComputePipelineState> MVKCommandResourceFactory::newCmdTraceRaysIndirectConvertMTLComputePipelineState(MVKVulkanAPIDeviceObject* owner) {
 	return newMTLComputePipelineState("cmdTraceRaysIndirectConvert", owner,
 		_mtlAccelerationStructureLibrary);

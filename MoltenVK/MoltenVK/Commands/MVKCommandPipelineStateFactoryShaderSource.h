@@ -654,59 +654,73 @@ typedef enum : uint32_t {
 	MVKAccelerationStructureDeserializeInstances,
 } MVKAccelerationStructureConversionType;
 
+kernel void cmdBuildAccelerationStructureConvertTransforms(
+    const device char* srcBuff [[buffer(0)]],
+    device char* dstBuff [[buffer(1)]],
+    constant uint32_t& srcStride [[buffer(2)]],
+    constant uint32_t& itemCount [[buffer(3)]],
+    uint idx [[thread_position_in_grid]]) {
+	if (idx >= itemCount) { return; }
+	const device float* src = reinterpret_cast<const device float*>(srcBuff + idx * srcStride);
+	device float* dst = reinterpret_cast<device float*>(dstBuff + idx * 12 * sizeof(float));
+	dst[0] = src[0]; dst[1] = src[4]; dst[2] = src[8];
+	dst[3] = src[1]; dst[4] = src[5]; dst[5] = src[9];
+	dst[6] = src[2]; dst[7] = src[6]; dst[8] = src[10];
+	dst[9] = src[3]; dst[10] = src[7]; dst[11] = src[11];
+}
+
 kernel void cmdBuildAccelerationStructureConvertBuffers(
     const device char* srcBuff [[buffer(0)]],
     device char* dstBuff [[buffer(1)]],
     constant uint32_t& srcStride [[buffer(2)]],
     constant uint32_t& itemCount [[buffer(3)]],
     constant uint32_t& conversionType [[buffer(4)]],
-		const device ulong2* accelerationStructureReferenceTable [[buffer(5)]],
-		device MVKSerializedAccelerationStructureInstanceRecord* serializedRecords [[buffer(6)]],
-		device ulong* serializedHandles [[buffer(7)]],
-		device uint* instanceMetadata [[buffer(8)]],
-	    uint idx [[thread_position_in_grid]]) {
+    const device ulong2* accelerationStructureReferenceTable [[buffer(5)]],
+    device MVKSerializedAccelerationStructureInstanceRecord* serializedRecords [[buffer(6)]],
+    device ulong* serializedHandles [[buffer(7)]],
+    device uint* instanceMetadata [[buffer(8)]],
+    uint idx [[thread_position_in_grid]]) {
 	if (idx >= itemCount) { return; }
-	if (conversionType == MVKAccelerationStructureConvertTransform) {
-		const device float* src = reinterpret_cast<const device float*>(srcBuff + idx * srcStride);
-		device float* dst = reinterpret_cast<device float*>(dstBuff + idx * 12 * sizeof(float));
-		dst[0] = src[0]; dst[1] = src[4]; dst[2] = src[8];
-		dst[3] = src[1]; dst[4] = src[5]; dst[5] = src[9];
-		dst[6] = src[2]; dst[7] = src[6]; dst[8] = src[10];
-		dst[9] = src[3]; dst[10] = src[7]; dst[11] = src[11];
-		return;
-	}
-	if (conversionType == MVKAccelerationStructureDeserializeInstances) {
-		const device auto& record = serializedRecords[idx];
-		ulong address = record.handleSlot < itemCount ? serializedHandles[record.handleSlot] : 0;
-		device auto& dst = *reinterpret_cast<device MVKMetalAccelerationStructureInstanceDescriptor*>(
-			dstBuff + idx * sizeof(MVKMetalAccelerationStructureInstanceDescriptor));
-		mvkWriteAccelerationStructureInstance(record.transform,
-			record.packedData1, record.packedData2, address,
-			accelerationStructureReferenceTable, dst);
-		instanceMetadata[idx] = record.packedData2 & 0xffffff;
-		return;
-	}
 	const device char* srcAddress = srcBuff + idx * srcStride;
 	if (conversionType == MVKAccelerationStructureConvertInstancePointers) {
 		srcAddress = reinterpret_cast<const device char*>(*reinterpret_cast<const device ulong*>(srcAddress));
 	}
 	const device auto& src = *reinterpret_cast<const device VkAccelerationStructureInstance*>(srcAddress);
-		device auto& record = serializedRecords[idx];
-		record.transform = src.transform;
-		record.packedData1 = src.packedData1;
-		record.packedData2 = src.packedData2;
-		record.handleSlot = idx;
-		record.reserved = 0;
-		serializedHandles[idx] = src.accelerationStructureReference;
+	device auto& record = serializedRecords[idx];
+	record.transform = src.transform;
+	record.packedData1 = src.packedData1;
+	record.packedData2 = src.packedData2;
+	record.handleSlot = idx;
+	record.reserved = 0;
+	serializedHandles[idx] = src.accelerationStructureReference;
 	device auto& dst = *reinterpret_cast<device MVKMetalAccelerationStructureInstanceDescriptor*>(
 		dstBuff + idx * sizeof(MVKMetalAccelerationStructureInstanceDescriptor));
 	mvkWriteAccelerationStructureInstance(src.transform,
 	                                      src.packedData1,
-		                                      src.packedData2,
-		                                      src.accelerationStructureReference,
-		                                      accelerationStructureReferenceTable,
-		                                      dst);
+	                                      src.packedData2,
+	                                      src.accelerationStructureReference,
+	                                      accelerationStructureReferenceTable,
+	                                      dst);
 	instanceMetadata[idx] = src.packedData2 & 0xffffff;
+}
+
+kernel void cmdDeserializeAccelerationStructureInstances(
+    device char* dstBuff [[buffer(1)]],
+    constant uint32_t& itemCount [[buffer(3)]],
+    const device ulong2* accelerationStructureReferenceTable [[buffer(5)]],
+    device MVKSerializedAccelerationStructureInstanceRecord* serializedRecords [[buffer(6)]],
+    device ulong* serializedHandles [[buffer(7)]],
+    device uint* instanceMetadata [[buffer(8)]],
+    uint idx [[thread_position_in_grid]]) {
+	if (idx >= itemCount) { return; }
+	const device auto& record = serializedRecords[idx];
+	ulong address = record.handleSlot < itemCount ? serializedHandles[record.handleSlot] : 0;
+	device auto& dst = *reinterpret_cast<device MVKMetalAccelerationStructureInstanceDescriptor*>(
+		dstBuff + idx * sizeof(MVKMetalAccelerationStructureInstanceDescriptor));
+	mvkWriteAccelerationStructureInstance(record.transform,
+		record.packedData1, record.packedData2, address,
+		accelerationStructureReferenceTable, dst);
+	instanceMetadata[idx] = record.packedData2 & 0xffffff;
 }
 
 struct MVKAccelerationStructureGatherInfo {
