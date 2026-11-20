@@ -1210,7 +1210,16 @@ MTLRenderPipelineDescriptor* MVKGraphicsPipeline::newMTLRenderPipelineDescriptor
 	}
 
 	// Add shader stages. Compile vertex shader before others just in case conversion changes anything...like rasterizaion disable.
+	if (meshDesc && pFragmentSS) {
+		SPIRVShaderInputs fragmentInputs;
+		if (getShaderInputs(_fragmentModule->getSPIRV(), spv::ExecutionModelFragment,
+		                    pFragmentSS->pName, fragmentInputs, errorLog)) {
+			shaderConfig.maskedMeshOutputs = getUnusedMeshOutputs(
+			    _vertexModule->getSPIRV(), pVertexSS->pName, fragmentInputs);
+		}
+	}
 	if (!addVertexShaderToPipeline(plDesc, pCreateInfo, shaderConfig, pVertexSS, pVertexFB, pFragmentSS, meshDesc)) { return nil; }
+	shaderConfig.maskedMeshOutputs.clear();
 
 	// Vertex input
 	// This needs to happen before compiling the fragment shader, or we'll lose information on vertex attributes.
@@ -3026,7 +3035,8 @@ namespace mvk {
 				cfg.shaderOutputs,
 				cfg.resourceBindings,
 				cfg.discreteDescriptorSets,
-				cfg.dynamicBufferDescriptors);
+				cfg.dynamicBufferDescriptors,
+				cfg.maskedMeshOutputs);
 	}
 
 	template<class Archive>
@@ -3218,7 +3228,7 @@ void mvkValidateCeralArchiveDefinitions() {
 	missingBytes += mvkValidateCerealArchiveSize<mvk::MSLShaderInterfaceVariable>(3);
 	missingBytes += mvkValidateCerealArchiveSize<mvk::MSLResourceBinding>(2);
 	missingBytes += mvkValidateCerealArchiveSize<mvk::DescriptorBinding>();
-	missingBytes += mvkValidateCerealArchiveSize<mvk::SPIRVToMSLConversionConfiguration>(109);	// Contains collection
+	missingBytes += mvkValidateCerealArchiveSize<mvk::SPIRVToMSLConversionConfiguration>(125);	// Contains collections
 	missingBytes += mvkValidateCerealArchiveSize<mvk::SPIRVToMSLConversionResultInfo>(40);		// Contains collection
 	missingBytes += mvkValidateCerealArchiveSize<mvk::MSLSpecializationMacroInfo>(22);			// Contains string
 	missingBytes += mvkValidateCerealArchiveSize<MVKShaderModuleKey>();

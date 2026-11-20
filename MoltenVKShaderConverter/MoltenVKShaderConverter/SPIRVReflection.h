@@ -380,5 +380,33 @@ namespace mvk {
 		return getShaderInterfaceVariables(spirv, spv::StorageClassInput, model, entryName, outputs, errorLog);
 	}
 
+	template<typename Vs, typename Vi>
+	static inline std::vector<uint64_t> getUnusedMeshOutputs(const Vs& spirv,
+	                                                       const std::string& entryName,
+	                                                       const Vi& inputs) {
+		SPIRV_CROSS_NAMESPACE::Parser parser(spirv);
+		parser.parse();
+		SPIRV_CROSS_NAMESPACE::CompilerReflection reflect(parser.get_parsed_ir());
+		reflect.set_entry_point(entryName, spv::ExecutionModelMeshEXT);
+		std::vector<uint64_t> unused;
+		for (auto id : reflect.get_active_interface_variables()) {
+			if (reflect.get_storage_class(id) != spv::StorageClassOutput ||
+			    reflect.has_decoration(id, spv::DecorationBuiltIn) ||
+			    !reflect.has_decoration(id, spv::DecorationLocation)) { continue; }
+			const auto& pointer = reflect.get_type_from_variable(id);
+			const auto& array = reflect.get_type(pointer.parent_type);
+			if (array.array.size() != 1 || array.columns != 1 || array.width > 32 ||
+			    array.basetype == SPIRV_CROSS_NAMESPACE::SPIRType::Struct) { continue; }
+			const uint32_t location = reflect.get_decoration(id, spv::DecorationLocation);
+			const uint32_t component = reflect.get_decoration(id, spv::DecorationComponent);
+			const bool used = std::any_of(inputs.begin(), inputs.end(), [&](auto& input) {
+				return input.isUsed && input.builtin == spv::BuiltInMax && input.location == location;
+			});
+			if (!used) { unused.push_back(uint64_t(location) << 32 | component); }
+		}
+		std::sort(unused.begin(), unused.end());
+		return unused;
+	}
+
 }
 #endif
